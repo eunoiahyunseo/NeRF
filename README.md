@@ -138,12 +138,5 @@ py.test
 
 
 ## My Result
-<video controls>
-  <source src="https://github.com/user-attachments/assets/3e61eee5-2417-4f5d-95d9-32f4929ed7da">
-  Your browser does not support the video tag.
-</video>
-
-<video controls>
-  <source src="https://github.com/user-attachments/assets/dcf4d176-0163-481e-a9d8-175098ba6ef3">
-  Your browser does not support the video tag.
-</video>
+![Image](https://github.com/user-attachments/assets/a8b59642-1812-4b03-b65a-85f8070e6e94)
+![Image](https://github.com/user-attachments/assets/878cd66c-1715-46ea-a5f1-99f5118c516c)
