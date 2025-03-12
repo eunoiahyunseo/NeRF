@@ -138,5 +138,12 @@ py.test
 
 
 ## My Result
-![](https://github.com/user-attachments/assets/3e61eee5-2417-4f5d-95d9-32f4929ed7da)
-![](https://github.com/user-attachments/assets/dcf4d176-0163-481e-a9d8-175098ba6ef3)
+<video controls>
+  <source src="https://github.com/user-attachments/assets/3e61eee5-2417-4f5d-95d9-32f4929ed7da">
+  Your browser does not support the video tag.
+</video>
+
+<video controls>
+  <source src="https://github.com/user-attachments/assets/dcf4d176-0163-481e-a9d8-175098ba6ef3">
+  Your browser does not support the video tag.
+</video>
