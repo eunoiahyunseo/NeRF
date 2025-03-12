@@ -18,23 +18,31 @@ class Embedder:
         self.create_embedding_fn()
         
     def create_embedding_fn(self):
-        embed_fns = []
-        d = self.kwargs['input_dims']
-        out_dim = 0
+        embed_fns = [] # 변환할 함수 리스트
+        d = self.kwargs['input_dims'] # 입력 차원 (보통 3)
+        out_dim = 0 # 출력차원 (몇개의 encoding을 만들 것인지)
+
+        # 원본 입력을 포함할 것인지에 대한 여부
         if self.kwargs['include_input']:
             embed_fns.append(lambda x : x)
             out_dim += d
-            
+        
+
         max_freq = self.kwargs['max_freq_log2']
         N_freqs = self.kwargs['num_freqs']
         
-        if self.kwargs['log_sampling']:
+        # freq_bands는 N_freqs개의 주파수 값이 됨
+        if self.kwargs['log_sampling']: # 로그스케일 or 선형 스케일
             freq_bands = 2.**torch.linspace(0., max_freq, steps=N_freqs)
         else:
             freq_bands = torch.linspace(2.**0., 2.**max_freq, steps=N_freqs)
-            
+        
+        # 각 주파수 freq에 대해 sin, cos을 적용
+        # freq -> [2^0, 2^1, ... ,2^(L - 1)]
         for freq in freq_bands:
+            # p_fn -> [sin, cos]
             for p_fn in self.kwargs['periodic_fns']:
+                # phi가 큰 영향을 끼치지는 않음
                 embed_fns.append(lambda x, p_fn=p_fn, freq=freq : p_fn(x * freq))
                 out_dim += d
                     
@@ -69,11 +77,17 @@ class NeRF(nn.Module):
         """ 
         """
         super(NeRF, self).__init__()
+        # D: 네트워크의 깊이(길이)
         self.D = D
+        # W: 네트워크의 너비
         self.W = W
+        # input_ch: 인풋채널 크기
         self.input_ch = input_ch
+        # input_ch_views: 방향채널 크기
         self.input_ch_views = input_ch_views
+        # skips: skip-connection적용 여부
         self.skips = skips
+        # use_viewdirs: 방향정보 적용 여부
         self.use_viewdirs = use_viewdirs
         
         self.pts_linears = nn.ModuleList(
@@ -87,8 +101,11 @@ class NeRF(nn.Module):
         #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
         
         if use_viewdirs:
+            # 중간에 feature를 변환하는 layer
             self.feature_linear = nn.Linear(W, W)
+            # 밀도(alpha) 예측
             self.alpha_linear = nn.Linear(W, 1)
+            # rgb 예측하는거, 
             self.rgb_linear = nn.Linear(W//2, 3)
         else:
             self.output_linear = nn.Linear(W, output_ch)
@@ -96,14 +113,19 @@ class NeRF(nn.Module):
     def forward(self, x):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
+
+        # MLP foward pass
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
             if i in self.skips:
+                # skip connection을 해준다.
                 h = torch.cat([input_pts, h], -1)
 
         if self.use_viewdirs:
+            # 바로 alpha(density)값 예측
             alpha = self.alpha_linear(h)
+            # feature 추출
             feature = self.feature_linear(h)
             h = torch.cat([feature, input_views], -1)
         
@@ -116,6 +138,7 @@ class NeRF(nn.Module):
         else:
             outputs = self.output_linear(h)
 
+        # 결과로 rgb, alpha값이 둘다 나옴
         return outputs    
 
     def load_weights_from_keras(self, weights):
@@ -151,14 +174,30 @@ class NeRF(nn.Module):
 
 # Ray helpers
 def get_rays(H, W, K, c2w):
+    print('c2w.shape ', c2w.shape)
+    print('c2w: ', c2w)
     i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
     i = i.t()
     j = j.t()
+    # i [378, 504], j [378, 504]
+    print('chekc i, j', i.shape, j.shape)
+    print(i, '\n', j)
+
+    # dirs [378, 504, 3]
+
+    # pixel좌표계에 있는 pixel들을 normalized plane으로 옮긴 결과 --> (z-plane = 1) 3d vector
+    # [X, Y, Z] -> [X, -Y, -Z]: OpenCV -> COLMAP이 사용하는 coordinate system이 다르기 떄문
     dirs = torch.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -torch.ones_like(i)], -1)
+    
+    print('dirs.shape', dirs.shape)
+    print(dirs)
     # Rotate ray directions from camera frame to the world frame
-    rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
+
+    # dir들을 c2w행렬과 dot-product하여 world-coordinate로 변환해준다
+    rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)
     rays_o = c2w[:3,-1].expand(rays_d.shape)
+    print('check ray', rays_d.shape, rays_o.shape)
+    print(rays_d, '\n', rays_o)
     return rays_o, rays_d
 
 

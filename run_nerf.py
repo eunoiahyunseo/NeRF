@@ -24,6 +24,7 @@ np.random.seed(0)
 DEBUG = False
 
 
+# 인자인 fn이 network의 forward함수에 해당. 
 def batchify(fn, chunk):
     """Constructs a version of 'fn' that applies to smaller batches.
     """
@@ -34,6 +35,7 @@ def batchify(fn, chunk):
     return ret
 
 
+# embeddirs_fn은 positional encoding 부분
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
@@ -56,7 +58,10 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
+        # ray_flat을 입력으로, ray위에 있는 voxel들의 color와 volume density를 출력으로 갖는 함수.
         ret = render_rays(rays_flat[i:i+chunk], **kwargs)
+
+        # chunk 크기만큼 batch로 구성하여, render_rays함수를 수행한 후, 결과값을 all_ret이라는 자료구조에 저장하는 코드드
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -66,6 +71,7 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     return all_ret
 
 
+# render안에서 batchify_rays를 하고 그 안에서 배치마다 render_rays를 한다.
 def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
                   near=0., far=1.,
                   use_viewdirs=False, c2w_staticcam=None,
@@ -99,6 +105,8 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
         # use provided ray batch
         rays_o, rays_d = rays
 
+    # viewdirs는 카메라의 pose를 나타낸다. MLP의 입력으로 들어가는 view direction
+    # 원래라면 (phi, theta)값을 넣어주어야 하지만, rays_d값을 normalize해주어 3개의 변수로 구성되어있음
     if use_viewdirs:
         # provide ray directions as input
         viewdirs = rays_d
@@ -108,21 +116,32 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
         viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
         viewdirs = torch.reshape(viewdirs, [-1,3]).float()
 
+        print('viewdirs: ', viewdirs)
+
     sh = rays_d.shape # [..., 3]
     if ndc:
         # for forward facing scenes
         rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
 
     # Create ray batch
-    rays_o = torch.reshape(rays_o, [-1,3]).float()
+    rays_o = torch.reshape(rays_o, [-1,3]).float() # [378, 504, 3] -> [190512, 3]
     rays_d = torch.reshape(rays_d, [-1,3]).float()
 
+    # 1로 채워놓음
     near, far = near * torch.ones_like(rays_d[...,:1]), far * torch.ones_like(rays_d[...,:1])
+
+    # [190512, 8] -> 3(rays_o) + 3(rays_d) + 2(near + far)
     rays = torch.cat([rays_o, rays_d, near, far], -1)
+
+    # use_viewdirs=True -> view direction을 입력으로 사용함.
     if use_viewdirs:
         rays = torch.cat([rays, viewdirs], -1)
 
-    # Render and reshape
+    # rays: [190512, 11]
+    print('rays shape: ', rays.shape)
+
+    # Render and reshape -> for OOM
+    # all_ret: rendering 결괏값을 가지고 있는 배열
     all_ret = batchify_rays(rays, chunk, **kwargs)
     for k in all_ret:
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
@@ -134,6 +153,7 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     return ret_list + [ret_dict]
 
 
+# inference에 사용되는 rendering 코드드
 def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
 
     H, W, focal = hwf
@@ -151,6 +171,11 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
     for i, c2w in enumerate(tqdm(render_poses)):
         print(i, time.time() - t)
         t = time.time()
+
+        # render()를 통해 rgb, disp, acc를 갖는다.
+        # rgb: 최종 결과 image map
+        # disp: disparity map으로써 inverse of depth
+        # acc: accumulated opacity(alpha)
         rgb, disp, acc, _ = render(H, W, K, chunk=chunk, c2w=c2w[:3,:4], **render_kwargs)
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
@@ -274,12 +299,19 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     """
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
 
+    # dists는 ray간의 거리를 나타냄
     dists = z_vals[...,1:] - z_vals[...,:-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
-
+    
+    # 카메라 좌표계에 있는 point들을 World좌표계로 이동
+    # z축 기준 거리를 실제 3D 거리로 보정
     dists = dists * torch.norm(rays_d[...,None,:], dim=-1)
 
+    # rgb는 MLP의 출력인 raw에서 앞쪽 3개에 해당하는 값
     rgb = torch.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
+
+    # Gaussian Noise로 생성되어짐짐
+    # 실제로 Gaussian Noise를 적용해서 퀄리티 향상을 줄 수 있다고 Appendix에 나와있음음
     noise = 0.
     if raw_noise_std > 0.:
         noise = torch.randn(raw[...,3].shape) * raw_noise_std
@@ -289,14 +321,30 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             np.random.seed(0)
             noise = np.random.rand(*list(raw[...,3].shape)) * raw_noise_std
             noise = torch.Tensor(noise)
-
+    
+    # alpha는 (1-exp(-sigma_i * delta_i))에 해당하는 값
+    # MLP출력값인 raw의 volume density(sigma)값과 dists(delta)값의 곱으로 계산됨
+    # Target Point의 불투명도를 나타낸다.
     alpha = raw2alpha(raw[...,3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
+    # raw: [num_rays, num_samples along ray, 4]. Prediction from model.
+
+    # weights는 T_i(1-exp(-sigma_i * delta_i))에 해당하는 값
+    # cat( [num_rays, 1] 1-alpha ) [1, ...[1-alpha]] -> cumprod하면 [cumprod(1), cumprod(1-alpha)]
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
+
+    # rgb_map은 C(r)에 해당하는 값 -> ray위의 N개의 모든 점에 대해 summation하여 계산됨.
+    # sum(weights * rgb)으로 표현가능능
     rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
 
+    # weights와 z_vals을 곱하고, 전체를 summation함으로써, Volume Density값으로 Depth Map을 형성
+    # C(r)식에서 c_i대신에 z_vals가 들어갔다고 생각하면 됨. 카메라로부터 멀어지면 값이 커지고, weights가 커져도 값이 커짐짐
     depth_map = torch.sum(weights * z_vals, -1)
+
+    # disparity map이며, 이는 depth map을 inverse한 map으로 표현되어 있음
     disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
+
+    # acc_map은 weights들을 summation하여 나타냄. fine network의 입력값들을 sampling할때 사용됨.
     acc_map = torch.sum(weights, -1)
 
     if white_bkgd:
@@ -348,20 +396,30 @@ def render_rays(ray_batch,
       z_std: [num_rays]. Standard deviation of distances along ray for each
         sample.
     """
-    N_rays = ray_batch.shape[0]
+    # [1024, 11]
+    print('ray_batch.shape: ', ray_batch.shape) 
+    print('ray_batch: ', ray_batch)
+    N_rays = ray_batch.shape[0] # ray의 개수
     rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
     viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
+
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
 
+    # N_samples: 64
+    # 0~1사이에 N_samples 갯수만큼 균일하게 나누어진 실수값을 가짐
     t_vals = torch.linspace(0., 1., steps=N_samples)
-    if not lindisp:
+    if not lindisp: # lindisp -> inverse depth
         z_vals = near * (1.-t_vals) + far * (t_vals)
     else:
+        # 카메라에서 point가 떨어진 깊이를 저장하는 변수 -> lindisp=False: z_vals는 거리
+        # [near, far] 균일한 값을 저장하게 됨 -> 내분을 이용한듯
         z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
 
-    z_vals = z_vals.expand([N_rays, N_samples])
+    z_vals = z_vals.expand([N_rays, N_samples]) # [1024, 64]
 
+    # perturb은 stratified sampling에 해당됨. 
+    # i번째 point위치와 i+1번째 point위치 사이의 랜덤한 위치를 선택하는 sampling 알고리즘
     if perturb > 0.:
         # get intervals between samples
         mids = .5 * (z_vals[...,1:] + z_vals[...,:-1])
@@ -378,18 +436,27 @@ def render_rays(ray_batch,
 
         z_vals = lower + (upper - lower) * t_rand
 
+
+    # 주어진 image plane에서 주어진 Camera pose로 ray를 그렸을 때, world 좌표계에서 Voxel point좌표를 알 수 있음
+    # 논문에서도 o(rays_o) + t(z_vals)d(rays_d)
     pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples, 3]
 
 
 #     raw = run_network(pts)
+    # 첫번째 network_query_fn: coarse network
     raw = network_query_fn(pts, viewdirs, network_fn)
+    # raw: prediction from model
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
+    # finesampling할 개수
     if N_importance > 0:
 
-        rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
+        rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map  
 
+        # coarse_sampling에서 만든 z_val에서 깊이 중간값을 가져옴
         z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
+
+        # sample_pdf함수를 통해 앞선 weight를 이용해서, inverse translation sampling을 진행한다.
         z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], N_importance, det=(perturb==0.), pytest=pytest)
         z_samples = z_samples.detach()
 
@@ -398,8 +465,15 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
 #         raw = run_network(pts, fn=run_fn)
+
+        # network_query_fn은 pts와 view direction을 입력으로 하여, raw라는 출력값을 갖는 MLP함수
+        # Network의 결괏값을 post process없이 그대로 출력해서 raw라는 변수명을 붙임임
+        # 두번째 network_query_fn: fine network
+
         raw = network_query_fn(pts, viewdirs, run_fn)
 
+        # raw2outputs은 raw를 입력으로 하여, rgb_map, disp_map, acc_map, weights, depth_map형태로 변환하는 후처리 함수.
+        # NeRF논문에서 volume rendering수식이 들어가는 부분분
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
     ret = {'rgb_map' : rgb_map, 'disp_map' : disp_map, 'acc_map' : acc_map}
@@ -544,11 +618,18 @@ def train():
                                                                   spherify=args.spherify)
         hwf = poses[0,:3,-1]
         poses = poses[:,:3,:4]
+        # poses [20, 3, 4] -> extrinsic matrix
+        print("poses: llff", poses.shape)
+
+        # images [20, 378, 504, 3], render_poses [120, 3, 5], hwf, 1dim vector [378. 504. 407.5658], ./data/nerf_llff_data/fern
         print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
+        # render_poses는 c2w matrix
+
         if not isinstance(i_test, list):
             i_test = [i_test]
 
         if args.llffhold > 0:
+            # llff에서 자동으로 test데이터셋 분리
             print('Auto LLFF holdout,', args.llffhold)
             i_test = np.arange(images.shape[0])[::args.llffhold]
 
@@ -568,9 +649,16 @@ def train():
 
     elif args.dataset_type == 'blender':
         images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+
+        # image [138, 400, 400, 4], render_poses [40, 4, 4], hwf [400, 400, float64(555.555515...)], ./data/nerf_synthetic/lego
+        # hwf --> 모든 이미지가 같은 해상도와, 초점거리를 가지고 있음
+        # render_poses --> train은 138개지만 render를 위한 pose 40개를 사용한다는 의미
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+
+        # train, val, test에 해당하는 index list
         i_train, i_val, i_test = i_split
 
+        # near, far: 카메라로부터 Object가 있는 깊이, ray에서 point 샘플링할 최소, 최대 깊이를 의미함.
         near = 2.
         far = 6.
 
@@ -613,11 +701,13 @@ def train():
     hwf = [H, W, focal]
 
     if K is None:
+        # focal length, principal point를 통해 intrinsic matrix를 구성한다.
         K = np.array([
             [focal, 0, 0.5*W],
             [0, focal, 0.5*H],
             [0, 0, 1]
         ])
+
 
     if args.render_test:
         render_poses = np.array(poses[i_test])
@@ -724,7 +814,6 @@ def train():
                 rand_idx = torch.randperm(rays_rgb.shape[0])
                 rays_rgb = rays_rgb[rand_idx]
                 i_batch = 0
-
         else:
             # Random from one image
             img_i = np.random.choice(i_train)
@@ -733,6 +822,7 @@ def train():
             pose = poses[img_i, :3,:4]
 
             if N_rand is not None:
+                # rays_o [378, 504, 3], rays_d [378, 504, 3] 
                 rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
 
                 if i < args.precrop_iters:
@@ -753,7 +843,9 @@ def train():
                 select_coords = coords[select_inds].long()  # (N_rand, 2)
                 rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
                 rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                # H*W 에서 random하게 N_rand(=1024)만큼 가져와서 rays_o, rays_d를 저장한 배열
                 batch_rays = torch.stack([rays_o, rays_d], 0)
+                # 실제 image의 픽셀값(target)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
         #####  Core optimization loop  #####
