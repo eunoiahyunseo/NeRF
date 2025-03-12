@@ -137,27 +137,6 @@ py.test
 > A neural radiance field is a simple fully connected network (weights are ~5MB) trained to reproduce input views of a single scene using a rendering loss. The network directly maps from spatial location and viewing direction (5D input) to color and opacity (4D output), acting as the "volume" so we can use volume rendering to differentiably render new views
 
 
-## Citation
-Kudos to the authors for their amazing results:
-```
-@misc{mildenhall2020nerf,
-    title={NeRF: Representing Scenes as Neural Radiance Fields for View Synthesis},
-    author={Ben Mildenhall and Pratul P. Srinivasan and Matthew Tancik and Jonathan T. Barron and Ravi Ramamoorthi and Ren Ng},
-    year={2020},
-    eprint={2003.08934},
-    archivePrefix={arXiv},
-    primaryClass={cs.CV}
-}
-```
-
-However, if you find this implementation or pre-trained models helpful, please consider to cite:
-```
-@misc{lin2020nerfpytorch,
-  title={NeRF-pytorch},
-  author={Yen-Chen, Lin},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished={\url{https://github.com/yenchenlin/nerf-pytorch/}},
-  year={2020}
-}
-```
+## My Result
+![](./logs/blender_paper_lego/blender_paper_lego_spiral_200000_rgb.mp4)
+![](./logs/fern_test/renderonly_path_200000/video.mp4)
